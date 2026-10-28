@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 采集/渲染产物
+out/
+inventory.json
+
+# 本地配置
+.env
+*.local
+.DS_Store
+Thumbs.db

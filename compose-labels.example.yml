@@ -1,0 +1,74 @@
+# ============================================================================
+#  Docker Compose 中文备注规范 · 示例
+#  作用：把「中文名 / 备注 / 负责人 / 等级 / 访问入口」写进 compose，
+#        让备注跟着项目走（仓库里就能看到），再由 docker_notes.py 读出来展示。
+#
+#  两条规则：
+#    1) 项目级备注 -> 顶层 x-note: 块（x- 开头的键 compose 会直接忽略，不影响启动）
+#    2) 服务级备注 -> 每个 service 的 labels: 里写 note.*
+#
+#  注意：labels 必须写在 service 下（compose 项目本身没有 labels 字段）。
+#  改完只需 `docker compose up -d` 让容器重建，备注才会进到容器 label 里。
+# ============================================================================
+
+# ---------- 项目级备注（整个 compose 项目一份） ----------
+x-note:
+  name: "电商后端"                # 中文名（看板卡片标题）
+  desc: "订单 / 支付 / 库存主链路，生产环境；改动需走变更单。"
+  owner: "平台组"                 # 负责团队 / 负责人
+  tier: "P0"                      # P0 核心 / P1 重要 / P2 一般
+  url: "https://shop.example.com" # 对外入口（可选）
+
+services:
+  api:
+    image: example/shop-api:1.4.2
+    restart: unless-stopped
+    ports:
+      - "18080:8080"              # 看板会显示成 18080→8080/tcp
+    environment:
+      TZ: Asia/Shanghai
+    # ---------- 服务级备注 ----------
+    labels:
+      note.name: "订单接口"                     # 中文名
+      note.desc: "对外下单主链路，读写 MySQL 与 Redis"
+      note.owner: "张伟"                        # 具体负责人（可选，覆盖项目级）
+      note.tier: "P0"
+      note.url: "https://shop.example.com/docs"
+      note.backup: "无状态服务，无需备份"
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:13306:3306"    # 只绑本机，看板会显示 127.0.0.1:13306→3306/tcp
+    environment:
+      MYSQL_ROOT_PASSWORD: "change-me"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    labels:
+      note.name: "主数据库"
+      note.desc: "订单库，每日 02:00 逻辑备份到 NAS"
+      note.tier: "P0"
+      note.backup: "每日 02:00 全量 + binlog 保留 7 天"
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 没有 ports：仅容器网络内可访问，端口一栏显示 -
+    labels:
+      note.name: "缓存"
+      note.desc: "会话与热点数据，maxmemory 512mb"
+
+# ============================================================================
+#  字段速查
+#  ---------------------------------------------------------------------------
+#  note.name    中文名          必填（不填看板显示“未备注”并给出提示）
+#  note.desc    备注/说明       建议写“它是什么 + 关键约束”
+#  note.owner   负责人/团队     可选
+#  note.tier    等级 P0/P1/P2   可选，看板用彩色徽章区分
+#  note.url     访问入口        可选
+#  note.backup  备份说明        可选，纯文本备注
+#
+#  端口：不用额外写，脚本从容器实际映射里读（0.0.0.0:8080->80/tcp 会显示 8080→80/tcp）
+#  CPU/内存/网络：运行时从 docker stats 采，不需要在 compose 里写
+# ============================================================================

@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+#  加固版：不把 docker.sock 直接给看板容器，而是经过 socket-proxy 只放行只读 API
+#
+#  用法：docker compose -f docker-compose.hardened.yml up -d
+#  原理：tecnativa/docker-socket-proxy 过滤 Docker API，只允许 GET 类只读端点；
+#        docker-notes 通过 DOCKER_HOST=tcp://socket-proxy:2375 访问。
+#  代价：多一个容器；如果 proxy 版本不支持某些端点，采集会报错（看容器日志）。
+# ---------------------------------------------------------------------------
+services:
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.2
+    container_name: docker-notes-proxy
+    restart: unless-stopped
+    environment:
+      # 只读所需：容器列表/详情/stats、版本、网络
+      CONTAINERS: 1
+      INFO: 1
+      VERSION: 1
+      NETWORKS: 1
+      # 明确关闭所有写操作
+      POST: 0
+      ALLOW_START: 0
+      ALLOW_STOP: 0
+      ALLOW_RESTARTS: 0
+      EXEC: 0
+      IMAGES: 0
+      VOLUMES: 0
+      BUILD: 0
+      COMMIT: 0
+      SYSTEM: 0
+      SWARM: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - notes
+
+  docker-notes:
+    image: ${IMAGE:-ghcr.io/benjiamin311/docker-notes-repo:latest}
+    container_name: docker-notes
+    restart: unless-stopped
+    depends_on:
+      - socket-proxy
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      DOCKER_HOST: tcp://socket-proxy:2375
+      REFRESH_SECONDS: ${REFRESH_SECONDS:-300}
+      TZ: ${TZ:-Asia/Shanghai}
+      BASIC_AUTH: ${BASIC_AUTH:-}
+      PATH_MAP: ${PATH_MAP:-/opt:/mnt/host-compose}
+    volumes:
+      - ${COMPOSE_DIR:-/opt}:${COMPOSE_MOUNT:-/mnt/host-compose}:ro
+    networks:
+      - notes
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+networks:
+  notes:
