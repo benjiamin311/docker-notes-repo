@@ -4,6 +4,9 @@
 >
 > 备注写在 compose 文件里（`labels` + `x-note`），跟着项目走，不用另建一份文档。
 
+[![build](https://github.com/benjiamin311/docker-notes-repo/actions/workflows/docker.yml/badge.svg)](https://github.com/benjiamin311/docker-notes-repo/actions/workflows/docker.yml)
+[![image](https://img.shields.io/badge/image-ghcr.io%2Fbenjiamin311%2Fdocker--notes--repo-blue)](https://github.com/benjiamin311/docker-notes-repo/pkgs/container/docker-notes-repo)
+
 ![看板截图](docs/preview.png)
 
 ---
@@ -122,26 +125,19 @@ services:
 
 ---
 
-## 把镜像发布到你自己的 GHCR
+## 镜像（GHCR）
 
-仓库已带 [`.github/workflows/docker.yml`](.github/workflows/docker.yml)：推送到 `main` 自动测试 → 构建 amd64+arm64 → 推送 `ghcr.io/benjiamin311/docker-notes-repo`。
+本仓库镜像，**公开可直接拉取**，支持 amd64 / arm64：
 
-```bash
-# 1) 在 GitHub 上建空仓库后：
-git init && git add . && git commit -m "feat: docker compose notes dashboard"
-git remote add origin https://github.com/benjiamin311/docker-notes-repo.git
-git branch -M main && git push -u origin main
-
-# 或者用 gh CLI 一步到位
-gh repo create docker-notes-repo --public --source=. --remote=origin --push
+```
+ghcr.io/benjiamin311/docker-notes-repo:latest
 ```
 
-构建完成后：
+[`.github/workflows/docker.yml`](.github/workflows/docker.yml) 在每次推送到 `main` 时自动执行：单元测试 → 构建双架构镜像 → 推送 GHCR；打 `v*` 标签会额外生成 `1.0.0` / `1.0` 版本标签，每次提交另有一个 `sha-<短哈希>` 标签便于回滚。
 
-1. 打开仓库 → **Packages** → `docker-notes` → **Package settings** → 把可见性改成 **Public**（否则 `docker pull` 需要 `docker login ghcr.io`）。
-2. 镜像地址即 `ghcr.io/benjiamin311/docker-notes-repo:latest`，打 `v1.0.0` 标签会额外生成 `1.0.0` / `1.0`。
+换成自己的账号：改 `.env` 里的 `IMAGE`（以及 workflow 里 `env.IMAGE`，默认已取 `github.repository`，一般不用动）。
 
-> 想用 Docker Hub：把 workflow 里 `IMAGE` 改成 `docker.io/benjiamin311/docker-notes-repo`，并加 `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` 两个 secret，登录步骤换成 `docker/login-action` 的 Docker Hub 配置即可。
+> 如果包变成私有：仓库 → **Packages** → `docker-notes-repo` → **Package settings** → 可见性改成 **Public**；否则宿主机需要先 `docker login ghcr.io`。
 
 ---
 
