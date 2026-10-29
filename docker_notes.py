@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import datetime as dt
 import html
 import json
@@ -1769,21 +1770,32 @@ def apply_overrides(inv, store):
 
 
 class State:
-    """采集结果的内存快照；采集失败时保留上一次成功的数据。"""
+    """采集结果的内存快照；采集失败时保留上一次成功的数据。
+
+    `base` 是不套备注的原始采集结果；`inventory` 是套了界面备注（notes.json）
+    之后对外展示的版本。改备注时只需要从 base 重新套一遍覆盖层，不用重新采集。
+    """
 
     def __init__(self, seed=None, store=None, path_map=None):
         self.lock = threading.Lock()
         self.refresh_lock = threading.Lock()
-        self.inventory = seed
+        self.base = copy.deepcopy(seed) if seed is not None else None
+        self.inventory = copy.deepcopy(seed) if seed is not None else None
         self.error = None
         self.updated_at = time.time() if seed else None
         self.ok_count = 0
         self.store = store
         self.path_map = path_map
+        if self.inventory is not None and self.store:
+            self.store.apply(self.inventory)
 
     def set_ok(self, inv):
+        merged = copy.deepcopy(inv) if self.store else inv
+        if self.store:
+            self.store.apply(merged)
         with self.lock:
-            self.inventory = inv
+            self.base = inv
+            self.inventory = merged
             self.error = None
             self.updated_at = time.time()
             self.ok_count += 1
@@ -1799,8 +1811,6 @@ class State:
     def refresh(self):
         with self.refresh_lock:
             inv = collect(self.path_map)
-            if self.store:
-                self.store.apply(inv)
             self.set_ok(inv)
             return inv
 
@@ -1810,6 +1820,17 @@ class State:
         except Exception as exc:
             self.set_error(str(exc))
             return None
+
+    def reapply_notes(self):
+        """备注改动后不重新采集，只把覆盖层重新套到上一次采集结果上。"""
+        with self.lock:
+            if self.base is None:
+                return None
+            inv = copy.deepcopy(self.base)
+            if self.store:
+                self.store.apply(inv)
+            self.inventory = inv
+            return inv
 
 
 def collector_loop(state, interval, path_map=None):
@@ -1906,9 +1927,16 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
             self._send(code, json.dumps(obj, ensure_ascii=False),
                        "application/json; charset=utf-8", extra)
 
+        def _reject(self, code, obj):
+            """直接拒绝且不读取请求体：必须关连接，否则残留字节会污染下一个请求。"""
+            self.close_connection = True
+            self._json(code, obj, {"Connection": "close"})
+
         def _unauthorized(self):
+            self.close_connection = True
             self._send(401, "需要认证\n", "text/plain; charset=utf-8",
-                       {"WWW-Authenticate": 'Basic realm="docker-notes", charset="UTF-8"'})
+                       {"WWW-Authenticate": 'Basic realm="docker-notes", charset="UTF-8"',
+                        "Connection": "close"})
 
         def _cross_origin(self):
             origin = self.headers.get("Origin") or ""
@@ -2059,13 +2087,13 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
             if not self._authed():
                 return self._unauthorized()
             if self._cross_origin():
-                return self._json(403, {"ok": False, "error": "跨站请求被拒绝"})
+                return self._reject(403, {"ok": False, "error": "跨站请求被拒绝"})
             if "application/json" not in (self.headers.get("Content-Type") or "").lower():
-                return self._json(415, {"ok": False, "error": "请求体必须是 application/json"})
+                return self._reject(415, {"ok": False, "error": "请求体必须是 application/json"})
             try:
                 body = self._read_json()
             except Exception as exc:
-                return self._json(400, {"ok": False, "error": "请求体解析失败：%s" % exc})
+                return self._reject(400, {"ok": False, "error": "请求体解析失败：%s" % exc})
             if not isinstance(body, dict):
                 return self._json(400, {"ok": False, "error": "请求体必须是 JSON 对象"})
 
@@ -2089,12 +2117,14 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
                     key = k.split("/", 1)[0] if it.get("scope") == "service" else k
                     if key:
                         break
-                inv = state.refresh_safe()
+                inv = state.reapply_notes()
                 if inv is None:
                     inv, _e, _u = state.snapshot()
-                    if inv is not None:
-                        store.apply(inv)
                 proj = next((p for p in (inv or {}).get("projects") or [] if p["name"] == key), None)
+                if proj is None:
+                    # 采集结果里暂时没有这个项目（刚被删或还没采到），退回上一次对外快照
+                    prev, _e, _u = state.snapshot()
+                    proj = next((p for p in (prev or {}).get("projects") or [] if p["name"] == key), None)
                 return self._json(200, {"ok": True, "html": render_card(proj) if proj else ""})
 
             # 立即重采
@@ -2167,8 +2197,6 @@ def cmd_serve(args):
         notes = "/data/notes.json" if os.path.isdir("/data") else \
             os.path.join(os.getcwd(), "notes.json")
     store = NoteStore(notes) if notes else None
-    if store and seed is not None:
-        store.apply(seed)
 
     allow_actions = bool(getattr(args, "allow_actions", False)) or _truthy(os.environ.get("ALLOW_ACTIONS"))
     allow_exec = bool(getattr(args, "allow_exec", False)) or _truthy(os.environ.get("ALLOW_EXEC"))

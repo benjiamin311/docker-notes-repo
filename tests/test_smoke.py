@@ -248,6 +248,17 @@ class TestWriteApi(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn("订单接口（新）", json.loads(body)["html"])
 
+    def test_clear_field_falls_back_to_compose(self):
+        code, _ = request(self.url("/api/notes"), "POST", {"items": [
+            {"scope": "project", "key": "shop", "fields": {"name": "临时名字"}}]})
+        self.assertEqual(code, 200)
+        code, body = request(self.url("/api/notes"), "POST", {"items": [
+            {"scope": "project", "key": "shop", "fields": {"name": ""}}]})
+        self.assertEqual(code, 200)
+        # 清空覆盖后回落到 compose 里的名字
+        self.assertIn("电商后端", json.loads(body)["html"])
+        self.assertNotIn("临时名字", json.loads(body)["html"])
+
     def test_rejects_bad_scope(self):
         code, body = request(self.url("/api/notes"), "POST", {"items": [
             {"scope": "hack", "key": "x", "fields": {"name": "x"}}]})
