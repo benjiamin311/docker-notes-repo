@@ -14,9 +14,15 @@
 ## 特性
 
 - **备注即代码**：`note.name` / `note.desc` / `note.owner` / `note.tier` 写在 `labels:` 里；项目级备注写在顶层 `x-note:`（compose 会忽略 `x-` 键，不影响启动）。
+- **也能在界面上直接改**：点卡片右上角 ✎ 改中文名 / 说明 / 负责人 / 等级 / 地址，服务级中文名也能改；改动落在 `/data/notes.json`，**不动 compose 文件**，改过的卡片标「界面备注」。
 - **一张卡片看全**：端口映射（含 `127.0.0.1:` 与 host 网络）、CPU、内存、网络收发、容器状态/健康/运行时长、内部网络与 IP。
+- **一键打开**：卡片右上角「打开」直接跳服务入口（优先 `note.url`，否则用第一个已发布端口 + 当前访问的 IP）。
+- **平铺 / 列表视图 + 勾选**：勾选后可批量「复制清单」（Markdown 表格，直接粘到工单或周报）。
+- **按状态 / 健康 / 等级筛选**：运行中、已退出、部分运行、健康异常、P0/P1/P2、未分层；组内多选取或、组间取与。
+- **按资源排序**：CPU / 内存 / 上行 / 下行，升降序切换。
+- **资源占比图（每 5 秒刷新）**：前 8 个项目的 100% 占比条，CPU / 内存 / 上行 / 下行一键切换；鼠标悬停或点色块看具体数值，点图例跳到对应卡片。
+- **容器控制台**：点服务名打开，四个页签 —— 基本信息（inspect）、日志（`docker logs` 尾部）、终端（单条命令）、操作（启动 / 停止 / 重启，需显式开启）。
 - **自动刷新**：容器内每 `REFRESH_SECONDS` 秒采集一次；页面在未输入搜索词时每 2 分钟自动重载。采集失败会保留上次快照，并在页面顶部横幅提示原因。
-- **可搜索**：按项目名 / 中文名 / 端口 / 负责人实时过滤。
 - **顺带可观测**：`/metrics` 输出 Prometheus 指标，`/healthz` 供探活，`/api/inventory.json` 给自动化用。
 - **两种权限模型**：简单版直接挂 `docker.sock:ro`；加固版经 `docker-socket-proxy` 只放行只读 API。
 - **单文件、零第三方依赖**：核心只有一个 `docker_notes.py`（Python 标准库）；镜像基于 Alpine，支持 amd64 / arm64。
@@ -33,15 +39,19 @@ docker run -d --name docker-notes \
   -p 8080:8080 \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v /opt:/mnt/host-compose:ro \
+  -v docker-notes-data:/data \
   -e PATH_MAP=/opt:/mnt/host-compose \
+  -e BASIC_AUTH=admin:换成你的密码 \
   -e REFRESH_SECONDS=300 \
   -e TZ=Asia/Shanghai \
   ghcr.io/benjiamin311/docker-notes-repo:latest
 ```
 
-打开 `http://<宿主机IP>:8080`。
+打开 `http://<宿主机IP>:8080`（设了 `BASIC_AUTH` 会先弹登录框）。
 
-> 只挂 `docker.sock` 也能看到**服务级**中文备注；再挂 compose 目录才能读到**项目级** `x-note`。
+> - 只挂 `docker.sock` 也能看到**服务级**中文备注；再挂 compose 目录才能读到**项目级** `x-note`。
+> - `-v docker-notes-data:/data` 是界面备注的存放位置，**不挂的话重建容器就丢了**。
+> - 想在界面里启停容器 / 跑命令，再加 `-e ALLOW_ACTIONS=1 -e ALLOW_EXEC=1`（见「安全提示」）。
 
 ### 方式 B：docker compose（推荐）
 
@@ -71,9 +81,13 @@ docker compose -f docker-compose.hardened.yml up -d
 | `BASIC_AUTH` | 空 | `user:pass`，设置后整个站点启用 HTTP Basic 认证 |
 | `PATH_MAP` | 空 | `宿主机路径:容器路径[;…]`，把 compose 文件路径映射到只读挂载点，用于读 `x-note` |
 | `DOCKER_HOST` | 空 | 走 socket-proxy 时设为 `tcp://socket-proxy:2375` |
+| `NOTES_FILE` | `/data/notes.json` | 界面备注的存放文件；设成空串 = 关闭界面编辑 |
+| `ALLOW_ACTIONS` | `0` | `1` = 允许在界面启停 / 重启容器（**必须同时设置 `BASIC_AUTH`**） |
+| `ALLOW_EXEC` | `0` | `1` = 允许在界面执行单条命令（**必须同时设置 `BASIC_AUTH`**） |
 | `TZ` | `Asia/Shanghai` | 容器时区 |
 
-命令行等价参数：`serve --port 8080 --refresh 300 --path-map /opt:/mnt/host-compose --basic-auth u:p`。
+命令行等价参数：`serve --port 8080 --refresh 300 --path-map /opt:/mnt/host-compose \
+--basic-auth u:p --notes /data/notes.json --allow-actions --allow-exec`。
 
 ---
 
@@ -112,6 +126,9 @@ services:
 
 改完 **`docker compose up -d` 重建容器**，labels 才会写进容器；只改 `x-note` 则下次采集即生效（直接读文件）。
 
+**优先级**：界面里改的备注（`notes.json`）> compose `x-note` / 容器 `labels`。
+界面上清空某个字段＝删掉这条覆盖，自动回落到 compose 里的值。
+
 ---
 
 ## HTTP 端点
@@ -122,6 +139,14 @@ services:
 | `/api/inventory.json` | 完整采集数据（JSON），便于二次开发 / 导入 Excel |
 | `/healthz` | 探活：`{"ok":true,"age_seconds":12,"projects":4}`；采集失败返回 503 |
 | `/metrics` | Prometheus 指标：项目 CPU / 内存 / 网络 / 服务数 / 采集状态 |
+| `/api/inspect?container=名字` | 容器详情（镜像 / 状态 / 端口 / 网络 / 数据卷 / 环境变量 / 非 compose 标签） |
+| `/api/logs?container=名字&lines=200` | `docker logs --tail N --timestamps` 的文本 |
+| `POST /api/notes` | 改备注：`{"items":[{"scope":"project","key":"shop","fields":{"name":"电商后端"}}]}`，返回更新后的卡片 HTML |
+| `POST /api/action` | 启停：`{"container":"shop-api-1","action":"start\|stop\|restart"}`（需 `ALLOW_ACTIONS=1` + 认证） |
+| `POST /api/exec` | 单条命令：`{"container":"shop-api-1","cmd":"ls -al /app"}`（需 `ALLOW_EXEC=1` + 认证） |
+| `POST /api/refresh` | 立刻重采一次，返回最新 inventory |
+
+写接口要求 `Content-Type: application/json`，并校验 `Origin` 与 `Host` 同源（防 CSRF）。
 
 ---
 
@@ -162,7 +187,7 @@ python3 docker_notes.py serve --port 8080                     # 常驻服务
 ```bash
 git clone https://github.com/benjiamin311/docker-notes-repo.git
 cd docker-notes
-python -m unittest discover -s tests -v      # 10 个用例，不需要 docker
+python -m unittest discover -s tests -v      # 25 个用例，不需要 docker
 python docker_notes.py demo                  # 看效果
 docker build -t docker-notes:dev . && docker run --rm docker-notes:dev demo --out-dir /tmp/out
 ```
@@ -171,7 +196,7 @@ docker build -t docker-notes:dev . && docker run --rm docker-notes:dev demo --ou
 
 ```
 docker_notes.py              # 采集 + 渲染 + Web 服务（标准库）
-tests/test_smoke.py          # 渲染 / 端口解析 / 路由 / 认证
+tests/test_smoke.py          # 渲染 / 端口解析 / 路由 / 认证 / 备注读写 / 写接口鉴权
 Dockerfile                   # python:3.12-alpine + docker-cli + compose 插件
 docker-compose.yml           # 简单部署
 docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
@@ -185,6 +210,9 @@ docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
 - `docker.sock` 的访问权限**等价于宿主机 root**。`:ro` 只是挂载属性，不能限制 Docker API 的写操作。对外暴露前请：
   - 至少开 `BASIC_AUTH`，并且只在内网/VPN 访问；
   - 或直接用 `docker-compose.hardened.yml`（socket-proxy 只放行 GET 类只读端点）。
+- **界面写操作默认全关**：`ALLOW_ACTIONS` / `ALLOW_EXEC` 都是 `0`。即使打开，只要没设 `BASIC_AUTH`，接口也会直接返回 403 —— 避免整个网段的人都能停你的容器。
+- 加固版走 socket-proxy 时，启停需要额外放开 `POST` / `ALLOW_START` / `ALLOW_STOP` / `ALLOW_RESTARTS`；不放就只能看不能动。
+- 终端执行的是 `docker exec <容器> sh -lc "<命令>"`，**单条、非交互式**（不是完整 PTY shell）；能登进看板的人就等于能进容器，权限按 root 对待。
 - 容器默认以 root 运行（需要读 docker socket）。若你的环境要求非 root，可在 compose 里加 `user: "1000:$(getent group docker | cut -d: -f3)"`。
 - 看板会展示容器内网 IP、端口与负责人信息，**不要直接暴露到公网**。
 
@@ -199,6 +227,7 @@ docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
 | CPU / 内存 / 网络 | `docker stats --no-stream` | **单次采样瞬时值**；CPU% 为占单核百分比，多核可 >100%；网络是容器累计值，重启清零 |
 | 运行时长 | `State.StartedAt` | 仅对 running 有意义 |
 | 项目级备注 | compose 文件 `x-note` | 需要把 compose 目录挂进容器（`PATH_MAP`） |
+| 界面备注 | `/data/notes.json` | 覆盖 compose 里的同名备注；页面标「界面备注」 |
 
 定位是**清单 / 交接 / 巡检快照**；需要历史曲线请上 Prometheus + Grafana（`/metrics` 已经可以接）。
 
@@ -212,6 +241,10 @@ docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
 | 全部显示「未备注」 | 只写了 `labels:` 没重建容器；或项目级 `x-note` 没挂载 compose 目录（检查 `PATH_MAP`） |
 | 端口一栏是 `-` | 容器只 `expose` 未 `publish`（内网服务，正常） |
 | 群晖 / 威联通 | 用 Container Manager 的「项目」导入 `docker-compose.yml`；compose 目录一般是 `/volume1/docker`，记得同步改 `PATH_MAP` |
+| 界面里改的备注重启后没了 | `/data` 没挂持久化卷；按「快速开始」加 `-v docker-notes-data:/data` |
+| 点保存提示「写入失败」 | 同上，容器内 `/data` 不可写（只读挂载 / 无权限） |
+| 启停按钮是灰的 / 提示未开启 | 需要 `ALLOW_ACTIONS=1` **且** 设置了 `BASIC_AUTH`，改完重启容器 |
+| 终端里 `docker exec` 报错 | 容器里没有 `sh`（如 distroless），或容器已退出；本功能是单条命令，不支持交互式会话 |
 | 想改配色 | `docker_notes.py` 里 `HTML_HEAD` 的 CSS 变量 `--brand/--brand2` |
 | 想加字段（如变更单号） | `NOTE_KEYS` 加键 + compose 加 `note.xxx` + 卡片模板加一行 |
 

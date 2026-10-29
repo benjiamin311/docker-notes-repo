@@ -12,6 +12,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+import base64
 from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -20,19 +21,29 @@ sys.path.insert(0, ROOT)
 import docker_notes as dn  # noqa: E402
 
 
-def get(url, auth=None):
-    req = urllib.request.Request(url)
+def request(url, method="GET", body=None, auth=None, ctype="application/json", extra=None):
+    data = None
+    if body is not None:
+        data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    if data is not None and ctype:
+        req.add_header("Content-Type", ctype)
     if auth:
-        import base64
         req.add_header("Authorization", "Basic " + base64.b64encode(auth.encode()).decode())
+    for k, v in (extra or {}).items():
+        req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return r.status, r.read().decode("utf-8")
     except urllib.error.HTTPError as e:
         try:
             return e.code, e.read().decode("utf-8")
         finally:
             e.close()
+
+
+def get(url, auth=None):
+    return request(url, auth=auth)
 
 
 class TestRender(unittest.TestCase):
@@ -154,6 +165,160 @@ class TestServeAuth(unittest.TestCase):
         code, body = get(url, auth="u:p")
         self.assertEqual(code, 200)
         self.assertIn("Docker Compose 项目看板", body)
+
+
+class TestNoteStore(unittest.TestCase):
+    def test_roundtrip(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "notes.json")
+            s = dn.NoteStore(path)
+            s.update([{"scope": "project", "key": "shop",
+                       "fields": {"name": "电商后端", "tier": "P0"}},
+                      {"scope": "service", "key": "shop/api",
+                       "fields": {"name": "订单接口"}}])
+            self.assertTrue(os.path.isfile(path))
+            again = dn.NoteStore(path)
+            self.assertEqual(again.data["projects"]["shop"]["name"], "电商后端")
+            self.assertEqual(again.data["services"]["shop/api"]["name"], "订单接口")
+            # 空值 = 删除该字段；删空后整条记录消失
+            again.update([{"scope": "project", "key": "shop", "fields": {"tier": ""}}])
+            self.assertNotIn("tier", dn.NoteStore(path).data["projects"]["shop"])
+
+    def test_apply_overrides(self):
+        inv = dn.demo_inventory()
+        store = dn.NoteStore(None)
+        store.data["projects"]["shop"] = {"name": "改过的项目名"}
+        store.data["services"]["shop/api"] = {"name": "改过的服务名"}
+        store.apply(inv)
+        proj = [p for p in inv["projects"] if p["name"] == "shop"][0]
+        self.assertEqual(proj["note"]["name"], "改过的项目名")
+        self.assertTrue(proj.get("note_override"))
+        api = [s for s in proj["services"] if s["service"] == "api"][0]
+        self.assertEqual(api["note"]["name"], "改过的服务名")
+
+    def test_rejects_bad_scope(self):
+        store = dn.NoteStore(None)
+        with self.assertRaises(dn.Fail):
+            store.update([{"scope": "nope", "key": "x", "fields": {}}])
+
+    def test_missing_file_is_readable(self):
+        store = dn.NoteStore(os.path.join(tempfile.gettempdir(), "nope-not-exist.json"))
+        self.assertEqual(store.data, {"projects": {}, "services": {}})
+
+
+class TestWriteApi(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.notes = os.path.join(self.tmp.name, "notes.json")
+        self.store = dn.NoteStore(self.notes)
+        inv = dn.demo_inventory()
+        self.store.apply(inv)
+        self.state = dn.State(inv, store=self.store)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), dn.make_handler(
+            self.state, store=self.store, allow_actions=False, allow_exec=False))
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.tmp.cleanup()
+
+    def url(self, p):
+        return "http://127.0.0.1:%d%s" % (self.port, p)
+
+    def test_edit_project_note(self):
+        code, body = request(self.url("/api/notes"), "POST", {"items": [
+            {"scope": "project", "key": "shop",
+             "fields": {"name": "电商平台", "tier": "P0", "owner": "平台组"}}]})
+        self.assertEqual(code, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["ok"])
+        self.assertIn("电商平台", payload["html"])
+        self.assertIn("data-key=\"shop\"", payload["html"])
+        # 页面和磁盘都生效
+        code, page = get(self.url("/"))
+        self.assertIn("电商平台", page)
+        with open(self.notes, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["projects"]["shop"]["name"], "电商平台")
+
+    def test_edit_service_note(self):
+        code, body = request(self.url("/api/notes"), "POST", {"items": [
+            {"scope": "service", "key": "shop/api", "fields": {"name": "订单接口（新）"}}]})
+        self.assertEqual(code, 200)
+        self.assertIn("订单接口（新）", json.loads(body)["html"])
+
+    def test_rejects_bad_scope(self):
+        code, body = request(self.url("/api/notes"), "POST", {"items": [
+            {"scope": "hack", "key": "x", "fields": {"name": "x"}}]})
+        self.assertEqual(code, 400)
+        self.assertIn("scope", json.loads(body)["error"])
+
+    def test_requires_json_content_type(self):
+        code, _ = request(self.url("/api/notes"), "POST", {"items": []}, ctype="text/plain")
+        self.assertEqual(code, 415)
+
+    def test_rejects_cross_origin(self):
+        code, _ = request(self.url("/api/notes"), "POST", {"items": []},
+                          extra={"Origin": "http://evil.example"})
+        self.assertEqual(code, 403)
+
+    def test_actions_need_flag(self):
+        code, body = request(self.url("/api/action"), "POST",
+                             {"container": "shop-api", "action": "restart"})
+        self.assertEqual(code, 403)
+        self.assertIn("ALLOW_ACTIONS", json.loads(body)["error"])
+
+    def test_exec_needs_flag(self):
+        code, body = request(self.url("/api/exec"), "POST",
+                             {"container": "shop-api", "cmd": "ls"})
+        self.assertEqual(code, 403)
+        self.assertIn("ALLOW_EXEC", json.loads(body)["error"])
+
+
+class TestActionsWithoutAuth(unittest.TestCase):
+    """开了 ALLOW_ACTIONS 但没设 BASIC_AUTH 时必须拒绝，否则整网段都能停容器。"""
+
+    def setUp(self):
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), dn.make_handler(
+            dn.State(dn.demo_inventory()), allow_actions=True, allow_exec=True))
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def test_refuse(self):
+        url = "http://127.0.0.1:%d/api/action" % self.port
+        code, body = request(url, "POST", {"container": "shop-api", "action": "stop"})
+        self.assertEqual(code, 403)
+        self.assertIn("BASIC_AUTH", json.loads(body)["error"])
+
+
+class TestCardMarkup(unittest.TestCase):
+    def test_attributes_for_filters_and_actions(self):
+        doc = dn.render_html(dn.demo_inventory(), {"live": True, "allow_actions": True})
+        self.assertIn('data-state="running"', doc)
+        self.assertIn('data-state="exited"', doc)
+        self.assertIn('data-health="none"', doc)
+        self.assertIn('data-tier="P0"', doc)
+        self.assertIn('data-tier="none"', doc)
+        self.assertIn('class="btn openbtn"', doc)
+        self.assertIn('data-act="edit"', doc)
+        self.assertIn('data-group="state"', doc)
+        self.assertIn('id="chart"', doc)
+        self.assertIn('window.__DN = {"live": true', doc)
+
+    def test_open_port_and_host_binding(self):
+        p = [x for x in dn.demo_inventory()["projects"] if x["name"] == "shop"][0]
+        self.assertEqual(dn._open_target(p), ("18080", ""))
+        crm = [x for x in dn.demo_inventory()["projects"] if x["name"] == "legacy-crm"][0]
+        self.assertEqual(dn._open_target(crm), ("8000", ""))
+
+    def test_static_export_has_no_live_flag(self):
+        doc = dn.render_html(dn.demo_inventory())
+        self.assertIn('"live": false', doc)
 
 
 if __name__ == "__main__":

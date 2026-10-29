@@ -10,6 +10,7 @@ inventory.json
 
 # 本地配置
 .env
+notes.json
 *.local
 .DS_Store
 Thumbs.db

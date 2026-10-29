@@ -14,12 +14,16 @@ WORKDIR /app
 COPY docker_notes.py /app/docker_notes.py
 COPY compose-labels.example.yml /app/compose-labels.example.yml
 
+# /data 用来放界面里改的备注（notes.json），部署时挂成 volume
+RUN mkdir -p /data
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONIOENCODING=UTF-8 \
     LANG=C.UTF-8 \
     PORT=8080 \
     REFRESH_SECONDS=300 \
+    NOTES_FILE=/data/notes.json \
     TZ=Asia/Shanghai
 
 EXPOSE 8080

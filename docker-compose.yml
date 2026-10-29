@@ -19,11 +19,18 @@ services:
       BASIC_AUTH: ${BASIC_AUTH:-}
       # 宿主机 compose 目录 -> 容器内挂载点，用于读取 x-note（项目级中文备注）
       PATH_MAP: ${PATH_MAP:-/opt:/mnt/host-compose}
+      # 界面里改的备注存这里（挂 volume，重建容器不丢）
+      NOTES_FILE: /data/notes.json
+      # 1 = 允许在界面启停 / 执行命令；必须同时设置 BASIC_AUTH
+      ALLOW_ACTIONS: ${ALLOW_ACTIONS:-0}
+      ALLOW_EXEC: ${ALLOW_EXEC:-0}
     volumes:
       # 只读挂载 docker socket（注意：socket 权限等价于 root，详见 README「安全」）
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # compose 文件所在目录（只读），用于读取项目级 x-note
       - ${COMPOSE_DIR:-/opt}:${COMPOSE_MOUNT:-/mnt/host-compose}:ro
+      # 界面备注
+      - notes:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status == 200 else 1)"]
       interval: 30s
@@ -37,3 +44,6 @@ services:
       options:
         max-size: "5m"
         max-file: "2"
+
+volumes:
+  notes:

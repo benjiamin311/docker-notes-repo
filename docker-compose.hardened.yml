@@ -48,8 +48,14 @@ services:
       TZ: ${TZ:-Asia/Shanghai}
       BASIC_AUTH: ${BASIC_AUTH:-}
       PATH_MAP: ${PATH_MAP:-/opt:/mnt/host-compose}
+      NOTES_FILE: /data/notes.json
+      # 注意：加固版默认屏蔽了所有写操作，启停会失败；要用就把 proxy 的
+      # POST / ALLOW_START / ALLOW_STOP / ALLOW_RESTARTS 改成 1（安全性自行评估）
+      ALLOW_ACTIONS: ${ALLOW_ACTIONS:-0}
+      ALLOW_EXEC: ${ALLOW_EXEC:-0}
     volumes:
       - ${COMPOSE_DIR:-/opt}:${COMPOSE_MOUNT:-/mnt/host-compose}:ro
+      - notes:/data
     networks:
       - notes
     security_opt:
@@ -61,4 +67,7 @@ services:
         max-file: "2"
 
 networks:
+  notes:
+
+volumes:
   notes:
