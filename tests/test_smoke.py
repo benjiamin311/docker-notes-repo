@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -204,6 +205,31 @@ class TestNoteStore(unittest.TestCase):
     def test_missing_file_is_readable(self):
         store = dn.NoteStore(os.path.join(tempfile.gettempdir(), "nope-not-exist.json"))
         self.assertEqual(store.data, {"projects": {}, "services": {}})
+
+    def test_net_rates_use_previous_sample(self):
+        def first_service(inv):
+            return inv["projects"][0]["services"][0]
+
+        base = dn.demo_inventory()
+        st = dn.State(base)
+        now = time.time()
+        for p in base["projects"]:
+            for s in p["services"]:
+                if s.get("net_rx_bytes") is None:
+                    continue
+                st._prev_net[s["container"]] = (s["net_rx_bytes"] - 10000,
+                                                s["net_tx_bytes"] - 5000,
+                                                now - 10)
+        inv = dn.demo_inventory()
+        st.set_ok(inv)
+        svc = first_service(inv)
+        self.assertAlmostEqual(svc["net_rx_rate"], 1000, delta=120)
+        self.assertAlmostEqual(svc["net_tx_rate"], 500, delta=60)
+        self.assertIn("net_rx_rate", inv["projects"][0]["totals"])
+        # 第一次采样（没有上一次）时不应伪造速率
+        fresh = dn.demo_inventory()
+        dn.State(fresh).set_ok(fresh)
+        self.assertNotIn("net_rx_rate", first_service(fresh))
 
 
 class TestWriteApi(unittest.TestCase):

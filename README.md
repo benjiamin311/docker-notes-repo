@@ -19,7 +19,7 @@
 - **一键打开**：卡片右上角「打开」直接跳服务入口（优先 `note.url`，否则用第一个已发布端口 + 当前访问的 IP）。
 - **平铺 / 列表视图 + 勾选**：勾选后可批量「复制清单」（Markdown 表格，直接粘到工单或周报）。
 - **按状态 / 健康 / 等级筛选**：运行中、已退出、部分运行、健康异常、P0/P1/P2、未分层；组内多选取或、组间取与。
-- **按资源排序**：CPU / 内存 / 上行 / 下行，升降序切换。
+- **按资源排序**：CPU / 内存 / 上行 / 下行（速率），升降序切换。
 - **资源占比图（每 5 秒刷新）**：前 8 个项目的 100% 占比条，CPU / 内存 / 上行 / 下行一键切换；鼠标悬停或点色块看具体数值，点图例跳到对应卡片。
 - **容器控制台**：点服务名打开，四个页签 —— 基本信息（inspect）、日志（`docker logs` 尾部）、终端（单条命令）、操作（启动 / 停止 / 重启，需显式开启）。
 - **自动刷新**：容器内每 `REFRESH_SECONDS` 秒采集一次；页面在未输入搜索词时每 2 分钟自动重载。采集失败会保留上次快照，并在页面顶部横幅提示原因。
@@ -187,7 +187,7 @@ python3 docker_notes.py serve --port 8080                     # 常驻服务
 ```bash
 git clone https://github.com/benjiamin311/docker-notes-repo.git
 cd docker-notes
-python -m unittest discover -s tests -v      # 25 个用例，不需要 docker
+python -m unittest discover -s tests -v      # 27 个用例，不需要 docker
 python docker_notes.py demo                  # 看效果
 docker build -t docker-notes:dev . && docker run --rm docker-notes:dev demo --out-dir /tmp/out
 ```
@@ -224,7 +224,7 @@ docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
 |---|---|---|
 | 项目列表 | `docker compose ls --all --format json` | 老版本 compose 自动退回解析表格 |
 | 端口 | `docker inspect` → `NetworkSettings.Ports` | 只 `expose` 未 `publish` 显示 `-`；`network_mode: host` 显示「host 网络」 |
-| CPU / 内存 / 网络 | `docker stats --no-stream` | **单次采样瞬时值**；CPU% 为占单核百分比，多核可 >100%；网络是容器累计值，重启清零 |
+| CPU / 内存 / 网络 | `docker stats --no-stream` | **单次采样瞬时值**；CPU% 为占单核百分比，多核可 >100%；上行 / 下行是**两次采样求差**得到的速率（字节/秒），卡片里另附累计值，容器重启后累计清零 |
 | 运行时长 | `State.StartedAt` | 仅对 running 有意义 |
 | 项目级备注 | compose 文件 `x-note` | 需要把 compose 目录挂进容器（`PATH_MAP`） |
 | 界面备注 | `/data/notes.json` | 覆盖 compose 里的同名备注；页面标「界面备注」 |
@@ -245,6 +245,7 @@ docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
 | 点保存提示「写入失败」 | 同上，容器内 `/data` 不可写（只读挂载 / 无权限） |
 | 启停按钮是灰的 / 提示未开启 | 需要 `ALLOW_ACTIONS=1` **且** 设置了 `BASIC_AUTH`，改完重启容器 |
 | 终端里 `docker exec` 报错 | 容器里没有 `sh`（如 distroless），或容器已退出；本功能是单条命令，不支持交互式会话 |
+| 上行 / 下行 一开始显示累计值 | 速率要两次采样才能算：启动约 12 秒后会切换成 `/s`，之后跟着 `REFRESH_SECONDS` 更新 |
 | 想改配色 | `docker_notes.py` 里 `HTML_HEAD` 的 CSS 变量 `--brand/--brand2` |
 | 想加字段（如变更单号） | `NOTE_KEYS` 加键 + compose 加 `note.xxx` + 卡片模板加一行 |
 

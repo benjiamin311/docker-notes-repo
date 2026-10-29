@@ -1033,15 +1033,24 @@ window.__INV = __INV_JSON__;
     do { n /= 1000; i++; } while (n >= 1000 && i < u.length - 1);
     return n.toFixed(n >= 10 ? 1 : 2) + ' ' + u[i];
   }
+  function hasRate(){
+    var ps = INV.projects || [];
+    for (var i = 0; i < ps.length; i++){
+      var t = ps[i].totals || {};
+      if (t.net_rx_rate != null || t.net_tx_rate != null) return true;
+    }
+    return false;
+  }
   function metricVal(p, m){
-    var t = p.totals || {};
+    var t = p.totals || {}, rate = hasRate();
     if (m === 'cpu') return t.cpu_percent || 0;
     if (m === 'mem') return t.mem_bytes || 0;
-    if (m === 'rx') return t.net_rx_bytes || 0;
-    return t.net_tx_bytes || 0;
+    if (m === 'rx') return t.net_rx_rate != null ? t.net_rx_rate : (rate ? 0 : (t.net_rx_bytes || 0));
+    return t.net_tx_rate != null ? t.net_tx_rate : (rate ? 0 : (t.net_tx_bytes || 0));
   }
   function metricText(v, m){
-    return m === 'cpu' ? (Number(v) || 0).toFixed(1) + '%' : bytes(v);
+    if (m === 'cpu') return (Number(v) || 0).toFixed(1) + '%';
+    return bytes(v) + ((m === 'rx' || m === 'tx') && hasRate() ? '/s' : '');
   }
 
   function renderChart(){
@@ -1050,7 +1059,8 @@ window.__INV = __INV_JSON__;
     var chart = document.getElementById('chart');
     var legend = document.getElementById('chartlegend');
     if (!ps.length || total <= 0){
-      chart.innerHTML = '<div class="cseg other" style="width:100%">暂无数据</div>';
+      chart.innerHTML = '<div class="cseg other" style="width:100%">' +
+        (ps.length ? '暂无流量（等待第二次采样）' : '暂无数据') + '</div>';
       legend.innerHTML = '';
       return;
     }
@@ -1519,6 +1529,19 @@ def render_card(p):
         if s.get("health"):
             health = '<span class="dot %s"></span>' % ("ok" if s["health"] == "healthy" else "warn")
         cn = service_note_name(s)
+        # 网络：有速率就显示速率（两次采样求差），累计值缩成一行小字
+        rx_b, tx_b = s.get("net_rx_bytes"), s.get("net_tx_bytes")
+        if s.get("net_rx_rate") is not None:
+            net_cell = ("&darr; %s/s<br>&uarr; %s/s"
+                        "<div class='muted small'>累计 &darr;%s &uarr;%s</div>" % (
+                            html.escape(human_bytes(s["net_rx_rate"], 1000)),
+                            html.escape(human_bytes(s["net_tx_rate"], 1000)),
+                            html.escape(human_bytes(rx_b, 1000)),
+                            html.escape(human_bytes(tx_b, 1000))))
+        else:
+            net_cell = "&darr; %s<br>&uarr; %s" % (
+                html.escape(human_bytes(rx_b, 1000)),
+                html.escape(human_bytes(tx_b, 1000)))
         rows.append(
             "<tr><td class='svc'><button type='button' class='svcbtn' "
             "data-container='%s' data-service='%s' title='打开控制台：信息 / 日志 / 终端'>%s</button>%s</td>"
@@ -1526,7 +1549,7 @@ def render_card(p):
             "<td class='ports'>%s</td>"
             "<td class='metric'>%s</td>"
             "<td class='metric'>%s<div class='muted small'>%s</div></td>"
-            "<td class='net'>&darr; %s<br>&uarr; %s</td></tr>" % (
+            "<td class='net'>%s</td></tr>" % (
                 html.escape(s.get("container", "")),
                 html.escape(s["service"]),
                 html.escape(s["service"]),
@@ -1537,11 +1560,16 @@ def render_card(p):
                 _bar(s["cpu_percent"], "#2E75B6"),
                 _bar(s["mem_percent"], "#1F4E79"),
                 html.escape(mem_text(s)),
-                html.escape(human_bytes(s["net_rx_bytes"], 1000)),
-                html.escape(human_bytes(s["net_tx_bytes"], 1000)),
+                net_cell,
             ))
 
     tot = p.get("totals") or {}
+    if tot.get("net_rx_rate") is not None:
+        net_kpi = "%s/s / %s/s" % (human_bytes(tot["net_rx_rate"], 1000),
+                                   human_bytes(tot.get("net_tx_rate"), 1000))
+    else:
+        net_kpi = "%s / %s" % (human_bytes(tot.get("net_rx_bytes"), 1000),
+                               human_bytes(tot.get("net_tx_bytes"), 1000))
     svc_terms = []
     for s in p["services"]:
         svc_terms.append(s["service"])
@@ -1604,7 +1632,7 @@ def render_card(p):
       <div class="kpis">
         <div class="kpi"><span>CPU 合计</span><b>{cpu:.1f}%</b></div>
         <div class="kpi"><span>内存合计</span><b>{mem}</b></div>
-        <div class="kpi"><span>网络 ↓ / ↑</span><b>{rx} / {tx}</b></div>
+        <div class="kpi"><span>网络 ↓ / ↑</span><b>{netkpi}</b></div>
         <div class="kpi"><span>服务数</span><b>{n}</b></div>
       </div>
       <table>
@@ -1630,8 +1658,7 @@ def render_card(p):
         urlchip=url_chip,
         cpu=tot.get("cpu_percent") or 0,
         mem=human_bytes(tot.get("mem_bytes")),
-        rx=human_bytes(tot.get("net_rx_bytes"), 1000),
-        tx=human_bytes(tot.get("net_tx_bytes"), 1000),
+        netkpi=net_kpi,
         n=len(p["services"]),
         rows="".join(rows),
     )
@@ -1786,10 +1813,45 @@ class State:
         self.ok_count = 0
         self.store = store
         self.path_map = path_map
+        self._prev_net = {}
         if self.inventory is not None and self.store:
             self.store.apply(self.inventory)
 
+    def _apply_rates(self, inv):
+        """docker stats 给的是累计流量，这里用两次采样求差换成速率（字节/秒）。"""
+        now = time.time()
+        prev, cur = self._prev_net, {}
+        for p in inv.get("projects") or []:
+            tot = p.setdefault("totals", {})
+            rx_rate = tx_rate = 0.0
+            counted = missing = 0
+            for s in p.get("services") or []:
+                cname = s.get("container")
+                rx, tx = s.get("net_rx_bytes"), s.get("net_tx_bytes")
+                if not cname or rx is None or tx is None:
+                    continue
+                cur[cname] = (rx, tx, now)
+                counted += 1
+                old = prev.get(cname)
+                if not old:
+                    missing += 1
+                    continue
+                span = now - old[2]
+                drx, dtx = rx - old[0], tx - old[1]
+                if span < 1 or drx < 0 or dtx < 0:   # 容器重建，累计值归零
+                    missing += 1
+                    continue
+                s["net_rx_rate"] = drx / span
+                s["net_tx_rate"] = dtx / span
+                rx_rate += s["net_rx_rate"]
+                tx_rate += s["net_tx_rate"]
+            if counted and not missing:
+                tot["net_rx_rate"] = rx_rate
+                tot["net_tx_rate"] = tx_rate
+        self._prev_net = cur
+
     def set_ok(self, inv):
+        self._apply_rates(inv)
         merged = copy.deepcopy(inv) if self.store else inv
         if self.store:
             self.store.apply(merged)
@@ -1836,9 +1898,13 @@ class State:
 def collector_loop(state, interval, path_map=None):
     if path_map is not None:
         state.path_map = path_map
+    first = True
     while True:
         state.refresh_safe()
-        time.sleep(max(10, interval))
+        # 第一次采样只能拿到累计流量；12 秒后再采一次才有速率，
+        # 之后按 REFRESH_SECONDS 正常轮询
+        time.sleep(12 if first else max(10, interval))
+        first = False
 
 
 def _prom_label(s):
@@ -1927,16 +1993,33 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
             self._send(code, json.dumps(obj, ensure_ascii=False),
                        "application/json; charset=utf-8", extra)
 
+        def _drain_body(self, limit=65536):
+            """把没读的请求体读掉，避免 keep-alive 连接里残留字节 / 关闭时触发 RST。"""
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            if n <= 0:
+                return True
+            if n > limit:
+                return False
+            try:
+                self.rfile.read(n)
+                return True
+            except Exception:
+                return False
+
         def _reject(self, code, obj):
-            """直接拒绝且不读取请求体：必须关连接，否则残留字节会污染下一个请求。"""
+            if self._drain_body():
+                return self._json(code, obj)
             self.close_connection = True
             self._json(code, obj, {"Connection": "close"})
 
         def _unauthorized(self):
-            self.close_connection = True
+            if not self._drain_body():
+                self.close_connection = True
             self._send(401, "需要认证\n", "text/plain; charset=utf-8",
-                       {"WWW-Authenticate": 'Basic realm="docker-notes", charset="UTF-8"',
-                        "Connection": "close"})
+                       {"WWW-Authenticate": 'Basic realm="docker-notes", charset="UTF-8"'})
 
         def _cross_origin(self):
             origin = self.headers.get("Origin") or ""
