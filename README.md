@@ -17,6 +17,8 @@
 - **也能在界面上直接改**：点卡片右上角 ✎ 改中文名 / 说明 / 负责人 / 等级 / 地址，服务级中文名也能改；改动落在 `/data/notes.json`，**不动 compose 文件**，改过的卡片标「界面备注」。
 - **一张卡片看全**：端口映射（含 `127.0.0.1:` 与 host 网络）、CPU、内存、网络收发、容器状态/健康/运行时长、内部网络与 IP。
 - **一键打开**：卡片右上角「打开」直接跳服务入口（优先 `note.url`，否则用第一个已发布端口 + 当前访问的 IP）。
+- **卡片上直接启停**：每张卡片右上角 ▶ / ■ / ↻ 一次启动 / 停止 / 重启该项目的全部容器（需开启，见「安全提示」）。
+- **整页缩放**：工具栏 `－ 100% ＋`、`Ctrl + 滚轮`、`Ctrl + +/-/0`，60%–160%，选择记在浏览器里。
 - **平铺 / 列表视图 + 勾选**：勾选后可批量「复制清单」（Markdown 表格，直接粘到工单或周报）。
 - **按状态 / 健康 / 等级筛选**：运行中、已退出、部分运行、健康异常、P0/P1/P2、未分层；组内多选取或、组间取与。
 - **按资源排序**：CPU / 内存 / 上行 / 下行（速率），升降序切换。
@@ -142,7 +144,7 @@ services:
 | `/api/inspect?container=名字` | 容器详情（镜像 / 状态 / 端口 / 网络 / 数据卷 / 环境变量 / 非 compose 标签） |
 | `/api/logs?container=名字&lines=200` | `docker logs --tail N --timestamps` 的文本 |
 | `POST /api/notes` | 改备注：`{"items":[{"scope":"project","key":"shop","fields":{"name":"电商后端"}}]}`，返回更新后的卡片 HTML |
-| `POST /api/action` | 启停：`{"container":"shop-api-1","action":"start\|stop\|restart"}`（需 `ALLOW_ACTIONS=1` + 认证） |
+| `POST /api/action` | 启停：`{"container":"shop-api-1","action":"start\|stop\|restart"}`，或按项目整组 `{"project":"shop","action":"stop"}`；返回每个容器的结果（需 `ALLOW_ACTIONS=1` + 认证） |
 | `POST /api/exec` | 单条命令：`{"container":"shop-api-1","cmd":"ls -al /app"}`（需 `ALLOW_EXEC=1` + 认证） |
 | `POST /api/refresh` | 立刻重采一次，返回最新 inventory |
 
@@ -244,6 +246,7 @@ docker-compose.hardened.yml  # 经 socket-proxy 的只读部署
 | 界面里改的备注重启后没了 | `/data` 没挂持久化卷；按「快速开始」加 `-v docker-notes-data:/data` |
 | 点保存提示「写入失败」 | 同上，容器内 `/data` 不可写（只读挂载 / 无权限） |
 | 启停按钮是灰的 / 提示未开启 | 需要 `ALLOW_ACTIONS=1` **且** 设置了 `BASIC_AUTH`，改完重启容器 |
+| 点 ■ 后容器又自己起来了 | compose 里 `restart: always` / `unless-stopped` 会让守护进程把它拉起来；要彻底停用 `docker compose stop` |
 | 终端里 `docker exec` 报错 | 容器里没有 `sh`（如 distroless），或容器已退出；本功能是单条命令，不支持交互式会话 |
 | 上行 / 下行 一开始显示累计值 | 速率要两次采样才能算：启动约 12 秒后会切换成 `/s`，之后跟着 `REFRESH_SECONDS` 更新 |
 | 想改配色 | `docker_notes.py` 里 `HTML_HEAD` 的 CSS 变量 `--brand/--brand2` |

@@ -613,6 +613,11 @@ HTML_HEAD = r"""<!DOCTYPE html>
   .vbtn{border:0;background:#fff;color:var(--muted);font-size:12.5px;padding:7px 12px;cursor:pointer}
   .vbtn+.vbtn{border-left:1px solid var(--line)}
   .vbtn.active{background:#eef4fb;color:var(--brand);font-weight:600}
+  .zoom{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:#fff}
+  .zbtn{border:0;background:#fff;color:#374151;font-size:12.5px;padding:7px 9px;cursor:pointer;min-width:32px}
+  .zbtn+.zbtn{border-left:1px solid var(--line)}
+  .zbtn:hover{background:#f2f6fb;color:var(--brand)}
+  #zoomreset{min-width:54px;font-variant-numeric:tabular-nums;color:var(--muted)}
   .ghost-btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 11px;
         font-size:12.5px;color:#374151;cursor:pointer}
   .ghost-btn:hover{border-color:var(--brand2);color:var(--brand)}
@@ -689,6 +694,14 @@ HTML_HEAD = r"""<!DOCTYPE html>
   .ibtn{border:1px solid var(--line);background:#fff;color:#4b5563;width:26px;height:26px;border-radius:7px;
         cursor:pointer;font-size:13px;line-height:1;display:inline-flex;align-items:center;justify-content:center}
   .ibtn:hover{border-color:var(--brand2);color:var(--brand)}
+  .ops{display:inline-flex;gap:3px;margin-right:1px}
+  .ibtn.pwr{font-size:11px}
+  .ibtn.pwr.start{color:var(--ok);border-color:#cfe6da}
+  .ibtn.pwr.start:hover{background:#eef7f1;border-color:var(--ok)}
+  .ibtn.pwr.stop{color:var(--bad);border-color:#f0d3d1}
+  .ibtn.pwr.stop:hover{background:#fdeeee;border-color:var(--bad)}
+  .ibtn.pwr.restart:hover{background:#f5f7fa}
+  .ibtn.pwr.off{opacity:.5}
   .meta{color:var(--muted);font-size:12px;margin:6px 0 0}
   .desc{margin:8px 0 6px;color:#374151;font-size:13px}
   .chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:5px 0}
@@ -805,6 +818,11 @@ HTML_HEAD = r"""<!DOCTYPE html>
     <div class="views" role="group" aria-label="视图">
       <button class="vbtn active" data-view="tile" type="button">▦ 平铺</button>
       <button class="vbtn" data-view="list" type="button">☰ 列表</button>
+    </div>
+    <div class="zoom" role="group" aria-label="缩放">
+      <button class="zbtn" id="zoomout" type="button" title="缩小（Ctrl + 滚轮 / Ctrl -）">－</button>
+      <button class="zbtn" id="zoomreset" type="button" title="点击恢复到 100%">100%</button>
+      <button class="zbtn" id="zoomin" type="button" title="放大（Ctrl + 滚轮 / Ctrl +）">＋</button>
     </div>
     <button class="ghost-btn" id="clearf" type="button">清除筛选</button>
     <select id="sortby" title="按资源排序">
@@ -958,6 +976,7 @@ window.__INV = __INV_JSON__;
   var filters = {state:[], health:[], tier:[]};
   var onlySel = false;
   var metric = 'cpu';
+  var Z = 1;
   var COLORS = ['#1F4E79','#2E75B6','#4E9BD8','#7FB3E0','#2E7D5B','#59A17F','#ED7D31','#C0504D'];
 
   function $(s, r){ return (r || document).querySelector(s); }
@@ -1097,8 +1116,19 @@ window.__INV = __INV_JSON__;
   function showTip(text, e){
     tip.textContent = text || '';
     tip.classList.add('on');
-    tip.style.left = Math.min(window.innerWidth - 260, e.clientX + 14) + 'px';
-    tip.style.top = (e.clientY + 16) + 'px';
+    // body 上有 zoom 时，fixed 元素的坐标也会被缩放，这里换算回 CSS 像素
+    var x = e.clientX / Z + 14, y = e.clientY / Z + 16;
+    tip.style.left = Math.min(window.innerWidth / Z - 240, x) + 'px';
+    tip.style.top = y + 'px';
+  }
+
+  /* ---------------- 整页缩放 ---------------- */
+  function applyZoom(z){
+    Z = Math.min(1.6, Math.max(0.6, Math.round(z * 100) / 100));
+    document.body.style.zoom = Z;
+    var b = document.getElementById('zoomreset');
+    if (b) b.textContent = Math.round(Z * 100) + '%';
+    try { localStorage.setItem('dn.zoom', String(Z)); } catch (e) {}
   }
 
   /* ---------------- 编辑备注 ---------------- */
@@ -1278,6 +1308,26 @@ window.__INV = __INV_JSON__;
     });
   }
 
+  /* 项目级启停：一次作用于该项目的全部容器 */
+  function projectAction(op, key){
+    var label = {start:'启动', stop:'停止', restart:'重启'}[op] || op;
+    if (!D.live || !D.allow_actions){
+      toast('未开启容器操作：需要 ALLOW_ACTIONS=1 且设置 BASIC_AUTH', true);
+      return;
+    }
+    var p = null;
+    INV.projects.forEach(function(x){ if (x.name === key) p = x; });
+    var n = p ? (p.services || []).length : 0;
+    var name = (p && p.note && p.note.name) || key;
+    if (!confirm('确定' + label + '「' + name + '」的 ' + n + ' 个容器吗？')) return;
+    toast(label + '中…');
+    api('/api/action', 'POST', { project: key, action: op }).then(function(j){
+      if (!j.ok){ toast(j.error || (label + '失败'), true); return; }
+      toast(label + '成功，正在刷新…');
+      setTimeout(function(){ location.reload(); }, 1200);
+    }).catch(function(e){ toast((e && e.message) || (label + '失败'), true); });
+  }
+
   /* ---------------- 事件绑定 ---------------- */
   function hydrateCards(){
     $$('.card', grid).forEach(function(c){
@@ -1330,6 +1380,22 @@ window.__INV = __INV_JSON__;
     sortCards();
   });
 
+  /* 缩放：按钮 / Ctrl+滚轮 / Ctrl +/-/0 */
+  document.getElementById('zoomout').addEventListener('click', function(){ applyZoom(Z - 0.1); });
+  document.getElementById('zoomin').addEventListener('click', function(){ applyZoom(Z + 0.1); });
+  document.getElementById('zoomreset').addEventListener('click', function(){ applyZoom(1); });
+  document.addEventListener('wheel', function(e){
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    applyZoom(Z + (e.deltaY < 0 ? 0.1 : -0.1));
+  }, { passive: false });
+  document.addEventListener('keydown', function(e){
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.key === '+' || e.key === '='){ e.preventDefault(); applyZoom(Z + 0.1); }
+    else if (e.key === '-'){ e.preventDefault(); applyZoom(Z - 0.1); }
+    else if (e.key === '0'){ e.preventDefault(); applyZoom(1); }
+  });
+
   grid.addEventListener('change', function(e){
     var t = e.target;
     if (!t.classList || !t.classList.contains('pick')) return;
@@ -1340,6 +1406,8 @@ window.__INV = __INV_JSON__;
   });
 
   grid.addEventListener('click', function(e){
+    var pwr = e.target.closest && e.target.closest('[data-pact]');
+    if (pwr){ projectAction(pwr.dataset.pact, pwr.dataset.key); return; }
     var svc = e.target.closest && e.target.closest('.svcbtn');
     if (svc){ openConsole(svc.dataset.container, svc.dataset.service); return; }
     var act = e.target.closest && e.target.closest('[data-act="edit"]');
@@ -1420,6 +1488,10 @@ window.__INV = __INV_JSON__;
   $$('#pane-ops .btn').forEach(function(b){ b.addEventListener('click', function(){ doOp(b.dataset.op); }); });
 
   /* 初始化 */
+  var zParam = (location.search.match(/[?&]zoom=(\d{2,3})/) || [])[1];
+  var zSaved = null;
+  try { zSaved = parseFloat(localStorage.getItem('dn.zoom')); } catch (e) {}
+  applyZoom(zParam ? parseInt(zParam, 10) / 100 : (zSaved || 1));
   var hv = (location.hash || '').replace('#', '');
   if (hv === 'list' || hv === 'tile') setView(hv);
   else { try { setView(localStorage.getItem('dn.view') || 'tile'); } catch (e) { setView('tile'); } }
@@ -1512,7 +1584,7 @@ def _open_target(p):
     return None, ""
 
 
-def render_card(p):
+def render_card(p, flags=None):
     note = p.get("note") or {}
     ports = all_project_ports(p)
     networks = sorted({n["name"] for s in p["services"] for n in s.get("networks", [])})
@@ -1611,6 +1683,23 @@ def render_card(p):
     src_badge = ('<span class="src" title="在界面里改过，覆盖 compose 中的备注">界面备注</span>'
                  if p.get("note_override") else "")
 
+    # 项目级启停：一次作用于该项目的全部容器
+    ops_off = "" if (flags or {}).get("allow_actions") else " off"
+    running = sum(1 for s in p["services"] if s.get("state") == "running")
+    total = len(p["services"])
+    tip_extra = "" if not ops_off else "（未开启：需 ALLOW_ACTIONS=1 且设置 BASIC_AUTH）"
+    power = (
+        '<span class="ops">'
+        '<button class="ibtn pwr start%s" type="button" data-pact="start" data-key="%s" '
+        'title="启动该项目全部容器 · 当前 %d/%d 运行%s">&#9654;</button>'
+        '<button class="ibtn pwr stop%s" type="button" data-pact="stop" data-key="%s" '
+        'title="停止该项目全部容器%s">&#9632;</button>'
+        '<button class="ibtn pwr restart%s" type="button" data-pact="restart" data-key="%s" '
+        'title="重启该项目全部容器%s">&#8635;</button>'
+        '</span>' % (ops_off, html.escape(p["name"]), running, total, tip_extra,
+                     ops_off, html.escape(p["name"]), tip_extra,
+                     ops_off, html.escape(p["name"]), tip_extra))
+
     return """    <section class="card" data-key="{key}" data-search="{search}" data-state="{state}" data-health="{health}" data-tier="{tier}">
       <header>
         <div class="ptitle">
@@ -1620,6 +1709,7 @@ def render_card(p):
           {badge}{src}
         </div>
         <div class="acts">
+          {power}
           {open_btn}
           <button class="ibtn" type="button" data-act="edit" title="编辑备注">✎</button>
         </div>
@@ -1651,6 +1741,7 @@ def render_card(p):
         badge=_badge(note),
         src=src_badge,
         open_btn=open_btn,
+        power=power,
         meta=" ｜ ".join(meta_bits),
         desc=desc,
         ports=port_chips,
@@ -1677,7 +1768,7 @@ def render_html(inv, flags=None):
     if t["unlabeled"]:
         subtitle += ("<br>⚠️ <b>%d</b> 个项目还没写中文备注：点卡片右上角 ✎ 直接补，"
                      "或在 compose 里加 <code>x-note:</code>" % t["unlabeled"])
-    cards = "".join(render_card(p) for p in inv.get("projects") or [])
+    cards = "".join(render_card(p, flags) for p in inv.get("projects") or [])
 
     dn_json = json.dumps({
         "live": bool(flags.get("live")),
@@ -2208,7 +2299,7 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
                     # 采集结果里暂时没有这个项目（刚被删或还没采到），退回上一次对外快照
                     prev, _e, _u = state.snapshot()
                     proj = next((p for p in (prev or {}).get("projects") or [] if p["name"] == key), None)
-                return self._json(200, {"ok": True, "html": render_card(proj) if proj else ""})
+                return self._json(200, {"ok": True, "html": render_card(proj, flags) if proj else ""})
 
             # 立即重采
             if path == "/api/refresh":
@@ -2218,7 +2309,7 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
                                    "error": None if inv else (state.snapshot()[1] or "采集失败"),
                                    "inventory": inv})
 
-            # 启动 / 停止 / 重启
+            # 启动 / 停止 / 重启（支持单个容器，或按项目整组）
             if path == "/api/action":
                 if not allow_actions:
                     return self._json(403, {"ok": False,
@@ -2226,17 +2317,42 @@ def make_handler(state, basic_auth=None, store=None, path_map=None,
                 if not basic_auth:
                     return self._json(403, {"ok": False,
                                             "error": "开启容器操作前必须先设置 BASIC_AUTH"})
-                name = str(body.get("container") or "")
                 op = str(body.get("action") or "")
                 if op not in ("start", "stop", "restart"):
                     return self._json(400, {"ok": False, "error": "action 只能是 start / stop / restart"})
-                if not CONTAINER_RE.match(name):
-                    return self._json(400, {"ok": False, "error": "容器名不合法"})
-                rc, out = self._docker([op, name], timeout=60)
-                inv = state.refresh_safe() if rc == 0 else None
-                return self._json(200 if rc == 0 else 500,
-                                  {"ok": rc == 0, "exit": rc, "output": out,
-                                   "error": None if rc == 0 else out,
+                name = str(body.get("container") or "")
+                project = str(body.get("project") or "")
+                if project:
+                    cur, _e, _u = state.snapshot()
+                    proj = next((p for p in (cur or {}).get("projects") or []
+                                 if p.get("name") == project), None)
+                    if proj is None:
+                        return self._json(404, {"ok": False, "error": "找不到项目：%s" % project})
+                    names = [s.get("container") for s in proj.get("services") or []
+                             if s.get("container")]
+                    if not names:
+                        return self._json(400, {"ok": False, "error": "该项目没有容器"})
+                    if len(names) > 30:
+                        return self._json(400, {"ok": False,
+                                                "error": "该项目容器超过 30 个，请到控制台逐个操作"})
+                elif CONTAINER_RE.match(name):
+                    names = [name]
+                else:
+                    return self._json(400, {"ok": False,
+                                            "error": "需要 container 或 project，且名字要合法"})
+
+                results, ok = [], True
+                for cname in names:
+                    rc, out = self._docker([op, cname], timeout=90)
+                    results.append({"container": cname, "exit": rc, "output": out})
+                    ok = ok and rc == 0
+                inv = state.refresh_safe() if ok else None
+                err = None
+                if not ok:
+                    err = "；".join("%s: %s" % (r["container"], (r["output"] or "")[:200])
+                                   for r in results if r["exit"] != 0)
+                return self._json(200 if ok else 500,
+                                  {"ok": ok, "results": results, "error": err,
                                    "inventory": inv})
 
             # 单条命令

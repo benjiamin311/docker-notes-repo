@@ -357,6 +357,63 @@ class TestCardMarkup(unittest.TestCase):
         doc = dn.render_html(dn.demo_inventory())
         self.assertIn('"live": false', doc)
 
+    def test_project_power_buttons(self):
+        doc = dn.render_html(dn.demo_inventory(), {"live": True, "allow_actions": True})
+        for act in ("start", "stop", "restart"):
+            self.assertIn('data-pact="%s"' % act, doc)
+        self.assertNotIn("pwr start off", doc)
+
+    def test_project_power_buttons_dimmed_without_flag(self):
+        doc = dn.render_html(dn.demo_inventory(), {"live": True})
+        self.assertIn("pwr start off", doc)
+
+    def test_zoom_controls_present(self):
+        doc = dn.render_html(dn.demo_inventory())
+        self.assertIn('id="zoomout"', doc)
+        self.assertIn('id="zoomin"', doc)
+        self.assertIn('id="zoomreset"', doc)
+
+
+class TestProjectActions(unittest.TestCase):
+    """项目级启停：鉴权 + 参数校验走真实 HTTP。"""
+
+    def setUp(self):
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), dn.make_handler(
+            dn.State(dn.demo_inventory()), "admin:pw",
+            allow_actions=True, allow_exec=True))
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+    def post(self, payload):
+        return request("http://127.0.0.1:%d/api/action" % self.port, "POST", payload,
+                       auth="admin:pw")
+
+    def test_unknown_project(self):
+        code, body = self.post({"project": "nope", "action": "stop"})
+        self.assertEqual(code, 404)
+        self.assertIn("找不到项目", json.loads(body)["error"])
+
+    def test_bad_action(self):
+        code, body = self.post({"project": "shop", "action": "rm -rf"})
+        self.assertEqual(code, 400)
+
+    def test_requires_target(self):
+        code, body = self.post({"action": "restart"})
+        self.assertEqual(code, 400)
+
+    def test_project_action_reports_each_container(self):
+        # 本机 / CI 上都没有 shop-api 这些容器，应当是「每个容器都失败」
+        code, body = self.post({"project": "shop", "action": "restart"})
+        self.assertEqual(code, 500)
+        payload = json.loads(body)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(len(payload["results"]), 3)
+        self.assertTrue(payload["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
